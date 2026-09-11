@@ -1,0 +1,18 @@
+# Go build output
+/bin/
+*.exe
+*.test
+*.out
+
+# Terraform
+terraform/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+
+# Local env / editor
+.env
+.DS_Store
