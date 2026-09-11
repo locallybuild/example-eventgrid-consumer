@@ -32,12 +32,25 @@ with the time it arrived. Everything runs locally against
 Terraform runs through `locally run`, which points the azurerm provider at Locally and
 injects its credentials. You don't configure any endpoints yourself.
 
+## Why the consumer uses TLS
+
+The azurerm provider requires the webhook URL to be `https`, and Locally verifies the
+certificate when it delivers. You don't need to generate one: Locally already ships a
+`localhost` cert that its own delivery client trusts, at
+`~/.config/locally/localhost.pem` (and `localhost.key`). The `make consumer` target and
+the default `consumer_webhook_url` (`https://localhost:8080/events`) are set up for this,
+so it works with no extra steps.
+
 ## Run it end to end
 
-1. Start the consumer (leave it running — it answers the validation handshake when the
-   subscription is created):
+1. Start the consumer over TLS with Locally's cert (leave it running — it answers the
+   validation handshake Locally sends before delivering):
    ```bash
-   go run ./cmd/consumer
+   make consumer
+   # equivalently:
+   # go run ./cmd/consumer \
+   #   -tls-cert ~/.config/locally/localhost.pem \
+   #   -tls-key  ~/.config/locally/localhost.key
    ```
 2. Create the topic and subscription:
    ```bash
@@ -47,6 +60,9 @@ injects its credentials. You don't configure any endpoints yourself.
    ```bash
    make publish
    ```
+
+The event is delivered a few seconds after publishing (Locally retries on a short
+interval), and the consumer prints it.
 
 The consumer prints a block like this for each event:
 
@@ -74,15 +90,23 @@ Consumer flags (with env fallbacks):
 |---|---|---|
 | `-addr` | `CONSUMER_ADDR` | `:8080` |
 | `-path` | `CONSUMER_PATH` | `/events` |
+| `-tls-cert` | `CONSUMER_TLS_CERT` | _(none)_ |
+| `-tls-key` | `CONSUMER_TLS_KEY` | _(none)_ |
+
+With no `-tls-cert`/`-tls-key` the consumer serves plain HTTP, which is handy for poking
+at it with `curl`. Set both to serve HTTPS, which is what EventGrid delivery needs.
 
 Terraform variables live in `terraform/variables.tf` — the region (`location`), the
 resource/topic/subscription names, and `consumer_webhook_url` (default
-`http://localhost:8080/events`).
+`https://localhost:8080/events`).
 
 ## Notes
 
-- Locally's data plane is a single local process, so the webhook is reachable at plain
-  `http://localhost:8080` — no tunnel or container-host address needed.
+- Locally's data plane is a single local process, so the webhook is reachable at
+  `localhost` — no tunnel or container-host address needed.
+- Locally sends the subscription-validation handshake just before it first delivers, not
+  at subscription-create time, so applying the Terraform without the consumer running
+  still succeeds.
 - Locally state does not survive a restart. After restarting Locally, run
   `make tf-apply` again to recreate the topic and subscription.
 - Tear down with `make tf-destroy`.

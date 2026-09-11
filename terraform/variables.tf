@@ -21,6 +21,6 @@ variable "subscription_name" {
 
 variable "consumer_webhook_url" {
   type        = string
-  description = "URL the EventGrid subscription delivers to."
-  default     = "http://localhost:8080/events"
+  description = "URL the EventGrid subscription delivers to. EventGrid requires https."
+  default     = "https://localhost:8080/events"
 }

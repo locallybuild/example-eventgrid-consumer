@@ -26,6 +26,8 @@ func envOr(key, def string) string {
 func main() {
 	addr := flag.String("addr", envOr("CONSUMER_ADDR", ":8080"), "listen address")
 	path := flag.String("path", envOr("CONSUMER_PATH", "/events"), "webhook path (must start with /)")
+	tlsCert := flag.String("tls-cert", os.Getenv("CONSUMER_TLS_CERT"), "TLS certificate file; enables HTTPS when set with -tls-key")
+	tlsKey := flag.String("tls-key", os.Getenv("CONSUMER_TLS_KEY"), "TLS key file; enables HTTPS when set with -tls-cert")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -40,9 +42,24 @@ func main() {
 
 	srv := &http.Server{Addr: *addr, Handler: mux}
 
+	// Azure EventGrid requires https webhook endpoints, so serve TLS when a
+	// cert/key pair is provided. Without them, fall back to plain HTTP (useful
+	// for local testing with curl).
+	tls := *tlsCert != "" && *tlsKey != ""
+
 	go func() {
-		log.Info("consumer listening", "addr", *addr, "path", *path)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		scheme := "http"
+		if tls {
+			scheme = "https"
+		}
+		log.Info("consumer listening", "scheme", scheme, "addr", *addr, "path", *path)
+		var err error
+		if tls {
+			err = srv.ListenAndServeTLS(*tlsCert, *tlsKey)
+		} else {
+			err = srv.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			log.Error("server error", "err", err)
 			os.Exit(1)
 		}

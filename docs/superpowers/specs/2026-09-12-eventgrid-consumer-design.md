@@ -211,3 +211,30 @@ before building further — do not paper over it.
 1. `locally` running; `terraform apply` in `terraform/`.
 2. `go run ./cmd/consumer` (listens on `:8080`).
 3. `go run ./cmd/publisher` (reads TF outputs) — watch the consumer log the event.
+
+## 12. Spike findings (2026-09-12)
+
+Ran the live loop against Locally (`local-build`, EventGrid plugin API
+`2025-07-15-preview`). All resolved; the loop works end to end.
+
+- **Region:** `berlin` (default) is valid on this install (`locally regions list`).
+- **Webhook must be `https`:** the azurerm provider validates `webhook_endpoint.url`
+  client-side and rejects `http` (`expected ... schema of: "https"`). This is a
+  provider rule, not a Locally or protocol requirement. → default `consumer_webhook_url`
+  is now `https://localhost:8080/events`.
+- **Locally verifies the delivery cert:** it rejected a freshly generated `mkcert` leaf
+  (`tls: bad certificate`) but accepted Locally's own bundled cert
+  `~/.config/locally/localhost.pem` (+ `.key`), which covers `localhost` and `*.locally`.
+  → consumer gained `-tls-cert`/`-tls-key` flags; `make consumer` points at Locally's
+  cert. No cert generation needed.
+- **Validation handshake is just-in-time**, sent right before the first delivery — not
+  at subscription-create time. So `terraform apply` succeeds even with no consumer
+  running. The consumer answers it (confirmed in logs).
+- **`eventSubscriptions` ⚠️ partial did not block us:** the standard
+  `azurerm_eventgrid_event_subscription` created the subscription and Locally delivered
+  to it. No azapi workaround needed.
+- **Delivery latency:** event arrived ~6s after publish; Locally retries on a short
+  interval until the endpoint accepts.
+- **Decision (user):** finalize on https with Locally's bundled cert (idiomatic,
+  zero-generation, mirrors real Azure). The cert-free http-via-azapi route was not
+  pursued.
