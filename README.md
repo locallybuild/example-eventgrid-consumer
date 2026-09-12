@@ -1,20 +1,26 @@
 # example-eventgrid-consumer
 
-A small Go webhook consumer for Azure EventGrid, plus Terraform that provisions a
-topic and a webhook subscription. The consumer logs each event it receives, stamped
-with the time it arrived. Everything runs locally against
-[Locally](https://locally.build/docs).
+A small Go webhook consumer for Azure EventGrid, plus Terraform that provisions the
+EventGrid resources. The consumer logs each event it receives, stamped with the time it
+arrived. Everything runs locally against [Locally](https://locally.build/docs).
+
+There are two demos, because "consume EventGrid events" can mean two different things:
+
+- **Custom topic** — events your own code publishes to a topic. See Demo 1.
+- **System topic** — Azure resource lifecycle events, e.g. "a ServiceBus namespace was
+  created". This is the "fire on events happening" case. See Demo 2.
 
 ## What's here
 
 - `cmd/consumer` — HTTP server. Receives EventGrid deliveries at `POST /events`,
   answers the subscription-validation handshake, and prints each event with its
   arrival time. `GET /healthz` returns `ok`.
-- `cmd/publisher` — sends one sample event to the topic so you can watch it arrive.
+- `cmd/publisher` — sends one sample event to a custom topic (Demo 1).
 - `internal/events` — EventGrid-schema event types, batch parsing, validation detection.
 - `internal/consumer` — the request handler and the readable log format.
-- `terraform/` — the topic (`azurerm_eventgrid_topic`) and webhook subscription
-  (`azurerm_eventgrid_event_subscription`).
+- `terraform/` — a custom topic (`azurerm_eventgrid_topic`) and a webhook subscription.
+- `terraform-system-topic/` — a system topic on a resource group and a webhook
+  subscription, plus a sample resource whose creation fires an event.
 
 ## Prerequisites
 
@@ -23,8 +29,7 @@ with the time it arrived. Everything runs locally against
   ```bash
   locally build --skip-browser
   ```
-  (The dashboard stays at https://localhost:5678 for when you want it.)
-- The EventGrid plugin. Check with:
+- The EventGrid plugin:
   ```bash
   locally plugin supports Microsoft.EventGrid/topics
   ```
@@ -32,39 +37,32 @@ with the time it arrived. Everything runs locally against
 Terraform runs through `locally run`, which points the azurerm provider at Locally and
 injects its credentials. You don't configure any endpoints yourself.
 
-## Why the consumer uses TLS
+## The consumer and TLS
 
-The azurerm provider requires the webhook URL to be `https`, and Locally verifies the
-certificate when it delivers. You don't need to generate one: Locally already ships a
-`localhost` cert that its own delivery client trusts, at
-`~/.config/locally/localhost.pem` (and `localhost.key`). The `make consumer` target and
-the default `consumer_webhook_url` (`https://localhost:8080/events`) are set up for this,
-so it works with no extra steps.
+EventGrid (via the azurerm provider) requires the webhook URL to be `https`, and Locally
+verifies the certificate when it delivers. You don't need to generate one: Locally ships
+a `localhost` cert its own delivery client trusts, at `~/.config/locally/localhost.pem`
+(and `localhost.key`). `make consumer` points at it, so the loop works with no extra
+setup. Both demos deliver to `https://localhost:8080/events`.
 
-## Run it end to end
+```bash
+make consumer   # go run ./cmd/consumer -tls-cert ~/.config/locally/localhost.pem -tls-key ~/.config/locally/localhost.key
+```
 
-1. Start the consumer over TLS with Locally's cert (leave it running — it answers the
-   validation handshake Locally sends before delivering):
-   ```bash
-   make consumer
-   # equivalently:
-   # go run ./cmd/consumer \
-   #   -tls-cert ~/.config/locally/localhost.pem \
-   #   -tls-key  ~/.config/locally/localhost.key
-   ```
-2. Create the topic and subscription:
-   ```bash
-   make tf-apply      # locally run terraform -chdir=terraform apply
-   ```
-3. Fire a sample event:
-   ```bash
-   make publish
-   ```
+Leave it running for either demo — it answers the validation handshake Locally sends
+just before the first delivery.
 
-The event is delivered a few seconds after publishing (Locally retries on a short
-interval), and the consumer prints it.
+## Demo 1 — Custom topic (events you publish)
 
-The consumer prints a block like this for each event:
+A custom topic only carries what you explicitly publish to it.
+
+```bash
+make consumer      # terminal 1
+make tf-apply      # terminal 2: create the topic + subscription
+make publish       # send a sample event
+```
+
+The consumer prints:
 
 ```
 ────────────────────────────────────────────
@@ -72,15 +70,40 @@ The consumer prints a block like this for each event:
   id:          6f2e...
   eventType:   Example.Items.ItemReceived
   subject:     /example/items/1
-  eventTime:   2026-09-12T14:03:22.101Z
-  dataVersion: 1.0
   data:
-    {
-      "itemId": "1234",
-      "quantity": 3,
-      "message": "hello from the example publisher"
-    }
+    { "itemId": "1234", "quantity": 3, "message": "hello from the example publisher" }
 ```
+
+Tear down with `make tf-destroy`.
+
+## Demo 2 — System topic (fire on resource lifecycle events)
+
+A system topic sourced at a resource group receives a
+`Microsoft.Resources.ResourceWriteSuccess` / `ResourceDeleteSuccess` event whenever a
+resource inside that group is created or deleted — no publishing needed.
+
+```bash
+make consumer          # terminal 1
+make tf-apply-events   # terminal 2
+```
+
+`terraform-system-topic/` creates the resource group, the system topic, the webhook
+subscription, and then a sample ServiceBus namespace inside the group. Creating that
+namespace fires an event the consumer logs:
+
+```
+────────────────────────────────────────────
+[2026-09-12T00:22:06.198Z] event received
+  eventType: Microsoft.Resources.ResourceWriteSuccess
+  subject:   /subscriptions/.../resourceGroups/example-eventgrid-systopic/providers/Microsoft.ServiceBus/namespaces/example-trigger-ns
+  data:
+    { "operationName": "Microsoft.ServiceBus/namespaces/write",
+      "resourceType": "Microsoft.ServiceBus/namespaces", "status": "Succeeded", ... }
+```
+
+Any resource you create in that resource group — with Terraform, `az`, or anything else
+pointed at Locally — produces an event while the consumer is running. Tear down with
+`make tf-destroy-events`.
 
 ## Configuration
 
@@ -96,9 +119,8 @@ Consumer flags (with env fallbacks):
 With no `-tls-cert`/`-tls-key` the consumer serves plain HTTP, which is handy for poking
 at it with `curl`. Set both to serve HTTPS, which is what EventGrid delivery needs.
 
-Terraform variables live in `terraform/variables.tf` — the region (`location`), the
-resource/topic/subscription names, and `consumer_webhook_url` (default
-`https://localhost:8080/events`).
+Terraform variables live in each `*.tf` directory's `variables.tf` — region (`location`),
+resource names, and `consumer_webhook_url` (default `https://localhost:8080/events`).
 
 ## Notes
 
@@ -107,9 +129,8 @@ resource/topic/subscription names, and `consumer_webhook_url` (default
 - Locally sends the subscription-validation handshake just before it first delivers, not
   at subscription-create time, so applying the Terraform without the consumer running
   still succeeds.
-- Locally state does not survive a restart. After restarting Locally, run
-  `make tf-apply` again to recreate the topic and subscription.
-- Tear down with `make tf-destroy`.
+- Locally state does not survive a restart. After restarting Locally, re-run the
+  relevant `tf-apply` to recreate the resources.
 
 ## Tests
 
