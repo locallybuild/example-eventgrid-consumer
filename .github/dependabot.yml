@@ -1,0 +1,35 @@
+version: 2
+updates:
+  # Go modules and toolchain
+  - package-ecosystem: "gomod"
+    directories:
+      - "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      gomod:
+        patterns:
+          - "*"
+
+  # Terraform providers
+  - package-ecosystem: "terraform"
+    directories:
+      - "/terraform"
+      - "/terraform-system-topic"
+    schedule:
+      interval: "weekly"
+    groups:
+      terraform:
+        patterns:
+          - "*"
+
+  # GitHub Actions used by the CI
+  - package-ecosystem: "github-actions"
+    directories:
+      - "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"

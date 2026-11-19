@@ -41,9 +41,10 @@ There are two demos, because "consume EventGrid events" can mean two different t
   ```bash
   locally build --skip-browser
   ```
-- The EventGrid plugin:
+- The EventGrid plugin, and for Demo 2 the ServiceBus plugin too:
   ```bash
   locally plugin supports Microsoft.EventGrid/topics
+  locally plugin supports Microsoft.ServiceBus/namespaces
   ```
 
 Terraform runs through `locally run`, which points the azurerm provider at Locally and
@@ -61,8 +62,8 @@ setup. Both demos deliver to `https://localhost:8080/events`.
 make consumer   # go run ./cmd/consumer -tls-cert ~/.config/locally/localhost.pem -tls-key ~/.config/locally/localhost.key
 ```
 
-Leave it running for either demo — it answers the validation handshake Locally sends
-just before the first delivery.
+Start it before applying either demo, and leave it running: it answers the
+subscription-validation handshakes Locally sends.
 
 ## Demo 1 — Custom topic (events you publish)
 
@@ -70,7 +71,8 @@ A custom topic only carries what you explicitly publish to it.
 
 ```bash
 make consumer      # terminal 1
-make tf-apply      # terminal 2: create the topic + subscription
+make tf-init       # terminal 2: download the providers (first run only)
+make tf-apply      # create the topic + subscription
 make publish       # send a sample event
 ```
 
@@ -96,7 +98,8 @@ resource inside that group is created or deleted — no publishing needed.
 
 ```bash
 make consumer          # terminal 1
-make tf-apply-events   # terminal 2
+make tf-init-events    # terminal 2: download the providers (first run only)
+make tf-apply-events
 ```
 
 `terraform-system-topic/` creates the resource group, the system topic, the webhook
@@ -138,9 +141,9 @@ resource names, and `consumer_webhook_url` (default `https://localhost:8080/even
 
 - Locally's data plane is a single local process, so the webhook is reachable at
   `localhost` — no tunnel or container-host address needed.
-- Locally sends the subscription-validation handshake just before it first delivers, not
-  at subscription-create time, so applying the Terraform without the consumer running
-  still succeeds.
+- Locally sends the subscription-validation handshake when the subscription is created
+  (during the apply), and again just before it first delivers. Start the consumer before
+  you apply, so it's there to answer both.
 - Locally state does not survive a restart. After restarting Locally, re-run the
   relevant `tf-apply` to recreate the resources.
 

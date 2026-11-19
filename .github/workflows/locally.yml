@@ -1,0 +1,137 @@
+# Runs both demos against Locally the same way the README does - starts the
+# consumer, applies each Terraform root, checks the consumer received the
+# event it should have, then tears everything down again - so a change that
+# stops the example working fails its PR.
+name: Locally
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: locally-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to Locally
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required: Locally signs in using GitHub's OIDC token
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_wrapper: false
+
+      - name: Build
+        run: |
+          go build ./...
+          go vet ./...
+          go build -o bin/ ./cmd/...
+
+      - name: Test
+        run: go test ./...
+
+      - uses: locallybuild/setup-locally@dc4fb46b46af5deded2a7e8ce1b6da7c337240f0 # v1.2.0
+        with:
+          team-uuid: ${{ vars.LOCALLY_TEAM_UUID }}
+          plugins: custom
+          plugins-list: |
+            Microsoft.EventGrid
+            Microsoft.ServiceBus
+
+      # EventGrid only delivers to https webhooks, and Locally verifies the
+      # certificate when it does, so the consumer serves the localhost
+      # certificate setup-locally generated. It answers the validation
+      # handshakes during the applies, so it has to be up before them.
+      - name: Start the consumer
+        run: |
+          nohup bin/consumer -tls-cert "$LOCALLY_TLS_CERT_FILE_PATH" -tls-key "$LOCALLY_TLS_KEY_FILE_PATH" \
+            > consumer.log 2>&1 &
+          for _ in $(seq 30); do
+            curl --silent --fail --cacert "$LOCALLY_TLS_CA_FILE_PATH" https://localhost:8080/healthz && exit 0
+            sleep 1
+          done
+          echo "::error::the consumer didn't start"
+          cat consumer.log
+          exit 1
+
+      - name: Apply terraform (custom topic)
+        id: apply0
+        working-directory: terraform
+        run: |
+          terraform init -input=false
+          locally run terraform apply -auto-approve -input=false
+
+      - name: Publish an event to the custom topic
+        env:
+          SUBJECT: /ci/${{ github.run_id }}/${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          # The topic is served with a certificate from setup-locally's CA.
+          SSL_CERT_FILE="$LOCALLY_TLS_CA_FILE_PATH" \
+          TOPIC_ENDPOINT="$(locally run terraform -chdir=terraform output -raw topic_endpoint)" \
+          TOPIC_KEY="$(locally run terraform -chdir=terraform output -raw topic_primary_access_key)" \
+            bin/publisher -subject "$SUBJECT"
+          for _ in $(seq 60); do
+            grep -qF "subject:     $SUBJECT" consumer.log && exit 0
+            sleep 2
+          done
+          echo "::error::the consumer didn't receive the published event"
+          exit 1
+
+      - name: Apply terraform-system-topic (system topic)
+        id: apply1
+        working-directory: terraform-system-topic
+        run: |
+          terraform init -input=false
+          locally run terraform apply -auto-approve -input=false
+
+      - name: Wait for the resource event
+        run: |
+          for _ in $(seq 60); do
+            grep -qE 'subject: .*/providers/Microsoft\.ServiceBus/namespaces/example-trigger-ns$' consumer.log &&
+              grep -qF 'eventType:   Microsoft.Resources.ResourceWriteSuccess' consumer.log &&
+              exit 0
+            sleep 2
+          done
+          echo "::error::the consumer didn't receive the ServiceBus namespace's ResourceWriteSuccess event"
+          exit 1
+
+      # Only what this job's consumer received from this job's Locally
+      # instance; workflow commands are turned off while it prints, so nothing
+      # in it is acted on.
+      - name: Show what the consumer received
+        if: always() && hashFiles('consumer.log') != ''
+        run: |
+          stop="$(uuidgen)"
+          echo "::stop-commands::$stop"
+          cat consumer.log
+          echo "::$stop::"
+
+      - name: Destroy terraform-system-topic
+        # Only once there's something to destroy.
+        if: always() && steps.apply1.outcome != 'skipped'
+        working-directory: terraform-system-topic
+        run: locally run terraform destroy -auto-approve -input=false
+
+      - name: Destroy terraform
+        # Only once there's something to destroy.
+        if: always() && steps.apply0.outcome != 'skipped'
+        working-directory: terraform
+        run: locally run terraform destroy -auto-approve -input=false
+
+      - uses: locallybuild/setup-locally/teardown@dc4fb46b46af5deded2a7e8ce1b6da7c337240f0 # v1.2.0
+        if: always()

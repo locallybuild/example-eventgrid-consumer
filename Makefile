@@ -1,4 +1,4 @@
-.PHONY: build test consumer tf-init tf-apply tf-destroy publish tf-apply-events tf-destroy-events
+.PHONY: build test consumer tf-init tf-apply tf-destroy publish tf-init-events tf-apply-events tf-destroy-events
 
 # EventGrid requires an https webhook, and Locally verifies the cert on delivery.
 # Locally ships a localhost cert (covering localhost + *.locally) that its own
@@ -32,6 +32,9 @@ publish:
 
 # System-topic demo: a system topic on a resource group that fires
 # Microsoft.Resources.* events when resources in that group are created/deleted.
+tf-init-events:
+	locally run terraform -chdir=terraform-system-topic init
+
 tf-apply-events:
 	locally run terraform -chdir=terraform-system-topic apply
 
